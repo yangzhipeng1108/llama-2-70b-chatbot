@@ -25,7 +25,7 @@ def main(
 
     print("欢迎使用 llama2 模型，输入内容即可进行对话，stop 终止程序")
     while True:
-        query = input("\n user：")
+        query = input("\nuser:")
         if query.strip() == "stop":
             break
 
