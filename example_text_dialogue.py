@@ -5,6 +5,8 @@ import fire
 
 from llama import Llama
 import os
+import torch
+import torch.distributed as dist
 
 def main(
     ckpt_dir: str,
@@ -22,15 +24,18 @@ def main(
         max_batch_size=max_batch_size,
     )
     
-    # global_rank = int(os.environ["RANK"])
-    # local_rank = int(os.environ["LOCAL_RANK"])
-    # torch.cuda.set_device(global_rank % torch.cuda.device_count())
-    # dist.init_process_group(backend="nccl")
-    #
-    # torch.cuda.set_device(local_rank)
-    # device = torch.device("cuda", local_rank)
-    #
-    # torch.distributed.barrier()
+    global_rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(global_rank % torch.cuda.device_count())
+    dist.init_process_group(backend="nccl")
+
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
+    torch.distributed.barrier()
+
+    generator.model.to(device)
+
 
     print("欢迎使用 llama2 模型，输入内容即可进行对话，stop 终止程序")
     while True:
@@ -43,16 +48,16 @@ def main(
                 break
 
             prompts = [query]
-        results = generator.text_completion(
-            prompts,
-            max_gen_len=max_gen_len,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        for prompt, result in zip(prompts, results):
-            print(prompt)
-            print(f"> {result['generation']}")
-            print("\n==================================\n")
+            results = generator.text_completion(
+                prompts,
+                max_gen_len=max_gen_len,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            for prompt, result in zip(prompts, results):
+                print(prompt)
+                print(f"> {result['generation']}")
+                print("\n==================================\n")
 
 
 if __name__ == "__main__":
