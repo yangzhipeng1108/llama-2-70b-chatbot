@@ -1,7 +1,7 @@
 import gradio as gr
 
+from llama import text_completion
 from llama import Llama
-
 
 
 generator = Llama.build(
@@ -10,15 +10,20 @@ generator = Llama.build(
     max_seq_len=1024,
     max_batch_size=4,
 )
+
+model = generator.model
+tokenizer = generator.tokenizer
 def generate_text(text):
-    results = generator.text_completion(
+    text = [text]
+    results = text_completion(
+        model,tokenizer,
         text,
         max_gen_len=1024,
         temperature=0.6,
         top_p=0.9,
     )
 
-    return results
+    return results['generation']
 
 
 examples = [
@@ -49,7 +54,7 @@ gr.Interface(
     generate_text,
     "textbox",
     "text",
-    title="LLama 7B",
-    description="LLama-7B large language model.",
+    title="LLama2 70B",
+    description="LLama2 70B large language model.",
     examples=examples
 ).queue().launch(share=True, inbrowser=True)
