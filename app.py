@@ -1,10 +1,10 @@
 import gradio as gr
 
 from llama import text_completion
-from llama import Llama
+from llama import build
 
 
-generator = Llama.build(
+generator = build(
     ckpt_dir='llama-2-70b',
     tokenizer_path='tokenizer.model',
     max_seq_len=1024,
