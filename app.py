@@ -7,18 +7,29 @@ BitsAndBytesConfig,
 AutoModelForCausalLM,
 )
 
-model_name = 'inference/model/models--daryl149--llama-2-70b-chat-hf/snapshots/d18da95c7361c87847879c9b281d2566a9ae4242'
+model  = 'inference/model/models--daryl149--llama-2-70b-chat-hf/snapshots/d18da95c7361c87847879c9b281d2566a9ae4242'
 
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, load_in_4bit=True, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model)
+pipeline = transformers.pipeline(
+    "text-generation",
+    model=model,
+    torch_dtype=torch.float16,
+    load_in_4bit = True,
+    device_map="auto",
+)
 
 
 def generate_text(text):
-    inputs = tokenizer(text, return_tensors="pt")
-    generate_ids = model.generate(inputs.input_ids.cuda(), max_length=30)
-    result = tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    sequences = pipeline(
+        text,
+        do_sample=True,
+        top_k=10,
+        num_return_sequences=1,
+        eos_token_id=tokenizer.eos_token_id,
+        max_length=1024,
+    )
 
-    return result
+    return sequences[0]['generated_text']
 
 
 examples = [
