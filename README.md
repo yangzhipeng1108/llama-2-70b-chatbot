@@ -1,4 +1,4 @@
-# llama2--dialogs
+# llama-2-chatbot
 
 
 ## Run llama-2-70b-chat-hf via gradio
