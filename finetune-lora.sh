@@ -19,7 +19,7 @@ deepspeed --include localhost:1,2 --master_port 29000 finetune-lora.py \
     --gradient_accumulation_steps 8 \
     --num_train_epochs 5 \
     --warmup_steps 400 \
-    --load_in_bits 8 \
+    --load_in_bits 4 \
     --lora_r 8 \
     --lora_alpha 16 \
     --target_modules q_proj,k_proj,v_proj,o_proj,down_proj,gate_proj,up_proj \
