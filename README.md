@@ -1,17 +1,17 @@
 # 用Lora和deepspeed微调LLaMA2-Chat
 
-在两块P100（16G）上微调Llama-2-7b-chat模型。
+在八卡A800 上微调Llama-2-70b-chat模型。
 
 数据源采用了alpaca格式，由train和validation两个数据源组成。
 
 ## 1、显卡要求
 
-16G显存及以上（P100或T4及以上），一块或多块。
+八卡A800，或者跟多。
 
 ## 2、Clone源码
 
 ```bash
-git clone https://github.com/git-cloner/llama2-lora-fine-tuning
+git clone https://github.com/yangzhipeng1108/llama-2-chatbot.git
 cd llama2-lora-fine-tuning
 ```
 
@@ -36,7 +36,7 @@ python -m bitsandbytes
 ## 4、下载原始模型
 
 ```bash
-python model_download.py --repo_id daryl149/llama-2-7b-chat-hf
+python model_download.py --repo_id daryl149/llama-2-70b-chat-hf
 ```
 
 ## 5、扩充中文词表
@@ -46,7 +46,7 @@ python model_download.py --repo_id daryl149/llama-2-7b-chat-hf
 # 扩充完的词表在merged_tokenizes_sp（全精度）和merged_tokenizer_hf（半精度）
 # 在微调时，将使用--tokenizer_name ./merged_tokenizer_hf参数
 python merge_tokenizers.py \
-  --llama_tokenizer_dir ./models/daryl149/llama-2-7b-chat-hf \
+  --llama_tokenizer_dir ./models/daryl149/llama-2-70b-chat-hf \
   --chinese_sp_model_file ./chinese_sp.model
 ```
 
@@ -79,8 +79,8 @@ tail -f train.log
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python generate.py \
-    --base_model './models/daryl149/llama-2-7b-chat-hf' \
-    --lora_weights 'output/checkpoint-2000' \
+    --base_model './models/daryl149/llama-2-70b-chat-hf' \
+    --lora_weights 'output/checkpoint-800' \
     --load_8bit #不加这个参数是用的4bit
 ```
 
