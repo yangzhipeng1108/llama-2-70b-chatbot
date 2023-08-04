@@ -44,6 +44,7 @@ from transformers import (
     BitsAndBytesConfig,
     is_torch_tpu_available,
     set_seed,
+    get_scheduler,
 )
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
@@ -313,6 +314,32 @@ def _load_dataset(data_args, training_args, model_args):
         )
     return raw_datasets
 
+def get_optimizer_grouped_parameters(model,
+                                     weight_decay,
+                                     no_decay_name_list=[
+                                         "bias", "LayerNorm.weight"
+                                     ]):
+    optimizer_grouped_parameters = [
+        {
+            "params": [
+                p for n, p in model.named_parameters()
+                if (not any(nd in n
+                            for nd in no_decay_name_list) and p.requires_grad)
+            ],
+            "weight_decay":
+            weight_decay,
+        },
+        {
+            "params": [
+                p for n, p in model.named_parameters()
+                if (any(nd in n
+                        for nd in no_decay_name_list) and p.requires_grad)
+            ],
+            "weight_decay":
+            0.0,
+        },
+    ]
+    return optimizer_grouped_parameters
 
 def train():
     parser = HfArgumentParser(
@@ -323,9 +350,24 @@ def train():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    ds_config = get_train_ds_config(offload=False)
-
+    torch.cuda.set_device(training_args.local_rank)
+    training_args.device = torch.device("cuda", training_args.local_rank)
+    # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+    # torch.distributed.init_process_group(backend='nccl')
     deepspeed.init_distributed()
+
+
+    training_args.global_rank = torch.distributed.get_rank()
+
+    ds_config = get_train_ds_config(offload=False)
+    ds_config[
+        'train_micro_batch_size_per_gpu'] = training_args.per_device_train_batch_size
+    ds_config[
+        'train_batch_size'] = training_args.per_device_train_batch_size * torch.distributed.get_world_size(
+        ) * training_args.gradient_accumulation_steps
+
+
+    torch.distributed.barrier()
 
     send_example_telemetry("run_clm", model_args, data_args)
 
@@ -585,10 +627,29 @@ def train():
         model=model,
     )
 
-    model = deepspeed.initialize(
+    optimizer_grouped_parameters = get_optimizer_grouped_parameters(
+        model, training_args.weight_decay)
+
+    AdamOptimizer = FusedAdam
+    optimizer = AdamOptimizer(optimizer_grouped_parameters,
+                              lr=training_args.learning_rate,
+                              betas=(0.9, 0.95))
+
+    num_update_steps_per_epoch = math.ceil(
+        len(train_dataset) / training_args.gradient_accumulation_steps)
+    lr_scheduler = get_scheduler(
+        name=training_args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=training_args.numwarmup_steps,
+        num_training_steps=training_args.num_train_epochs * num_update_steps_per_epoch,
+    )
+
+    model, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
+        optimizer=optimizer,
         args=training_args,
         config=ds_config,
+        lr_scheduler=lr_scheduler,
         dist_init_required=True)
 
 
