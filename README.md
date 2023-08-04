@@ -1,6 +1,6 @@
 # 用Lora和deepspeed微调LLaMA2-Chat
 
-在八卡A800 上以int4精度 微调Llama-2-70b-chat模型。
+在八卡A800 上以int4和int8精度 微调Llama-2-70b-chat模型。或者多机A800以fb16精度 微调Llama-2-70b-chat模型
 
 数据源采用了alpaca格式，由train和validation两个数据源组成。
 
