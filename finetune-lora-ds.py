@@ -10,6 +10,8 @@ from itertools import chain
 
 import deepspeed
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
 
 from typing import Dict, Optional, List, Union
 
@@ -52,6 +54,7 @@ from utils.prompter import Prompter
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from ds.ds_utils import  get_train_ds_config
+from utils.utils import print_rank_0, to_device, save_hf_format, set_random_seed, get_all_reduce_mean, get_optimizer_grouped_parameters, save_zero_three_model
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +354,7 @@ def train():
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     torch.cuda.set_device(training_args.local_rank)
-    training_args.device = torch.device("cuda", training_args.local_rank)
+    device = torch.device("cuda", training_args.local_rank)
     # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
     # torch.distributed.init_process_group(backend='nccl')
     deepspeed.init_distributed()
@@ -359,7 +362,7 @@ def train():
 
     training_args.global_rank = torch.distributed.get_rank()
 
-    ds_config = get_train_ds_config(offload=False)
+    ds_config = get_train_ds_config(offload=True,stage=3)
     ds_config[
         'train_micro_batch_size_per_gpu'] = training_args.per_device_train_batch_size
     ds_config[
@@ -485,7 +488,7 @@ def train():
             load_in_8bit=True if model_args.load_in_bits == 8 else False,
             quantization_config=bnb_config_4bit if model_args.load_in_bits == 4 else bnb_config_8bit,
             device_map={"": int(os.environ.get("LOCAL_RANK") or 0)}
-        )  # .half().cuda()
+        ).half().cuda()
     else:
         model = AutoModelForCausalLM.from_config(config)
         n_params = sum({p.data_ptr(): p.numel()
@@ -640,7 +643,7 @@ def train():
     lr_scheduler = get_scheduler(
         name=training_args.lr_scheduler_type,
         optimizer=optimizer,
-        num_warmup_steps=training_args.numwarmup_steps,
+        num_warmup_steps=20,
         num_training_steps=training_args.num_train_epochs * num_update_steps_per_epoch,
     )
 
@@ -651,6 +654,72 @@ def train():
         config=ds_config,
         lr_scheduler=lr_scheduler,
         dist_init_required=True)
+
+
+
+    train_sampler = DistributedSampler(train_dataset)
+
+    eval_sampler = DistributedSampler(eval_dataset)
+
+    eval_dataloader = DataLoader(eval_dataset,
+                                 collate_fn=default_data_collator,
+                                 sampler=eval_sampler,
+                                 batch_size=training_args.per_device_eval_batch_size)
+
+    train_dataloader = DataLoader(train_dataset,
+                                  collate_fn=default_data_collator,
+                                  sampler=train_sampler,
+                                  batch_size=training_args.per_device_train_batch_size)
+
+    def evaluation(model, eval_dataloader):
+        model.eval()
+        losses = 0
+        for step, batch in enumerate(eval_dataloader):
+            batch = to_device(batch, device)
+            with torch.no_grad():
+                outputs = model(**batch)
+
+            loss = outputs.loss
+            losses += loss.float()
+
+        losses = losses / (step + 1)
+        try:
+            perplexity = torch.exp(losses)
+        except OverflowError:
+            perplexity = float("inf")
+        try:
+            perplexity = get_all_reduce_mean(perplexity).item()
+        except:
+            pass
+        return perplexity
+
+    for epoch in range(int(training_args.num_train_epochs)):
+        print_rank_0(
+            f"Beginning of Epoch {epoch+1}/{training_args.num_train_epochs}, Total Micro Batches {len(train_dataloader)}",
+            training_args.global_rank)
+        model.train()
+        for step, batch in enumerate(train_dataloader):
+            logger.info(batch)
+            batch = to_device(batch, device)
+            outputs = model(**batch, use_cache=False)
+            loss = outputs.loss
+            model.backward(loss)
+            model.step()
+
+        # Evaluate perplexity on the validation set.
+        print_rank_0(
+            f"***** Evaluating perplexity, Epoch {epoch+1}/{training_args.num_train_epochs} *****",
+            training_args.global_rank)
+        perplexity = evaluation(model, eval_dataloader)
+        print_rank_0(f"ppl: {perplexity}", training_args.global_rank)
+        model.tput_timer.update_epoch_count()
+
+    if training_args.output_dir is not None:
+        print_rank_0('saving the final model ...', training_args.global_rank)
+
+        if training_args.global_rank == 0:
+            save_hf_format(model, tokenizer, training_args)
+
 
 
     logger.info("**********初始化训练器**********")
