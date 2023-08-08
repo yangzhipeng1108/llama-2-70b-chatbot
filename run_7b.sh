@@ -1,4 +1,3 @@
-#!/bin/bash
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -21,8 +20,8 @@ deepspeed main.py \
    --validation_files  ./data/trans_chinese_alpaca_data.json \
    --per_device_train_batch_size 4 \
    --per_device_eval_batch_size 4 \
-   --do_train \
-   --do_eval \
+   --do_train True \
+   --do_eval True \
    --max_eval_samples 800 \
    --max_seq_len 1024 \
    --block_size 1024 \
@@ -37,3 +36,4 @@ deepspeed main.py \
    --deepspeed \
    --output_dir $OUTPUT \
    &> $OUTPUT/training.log
+
