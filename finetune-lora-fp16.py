@@ -449,10 +449,10 @@ def train():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
-    if model_args.load_in_bits == 8:
-        model = prepare_model_for_int8_training(model)
-    elif model_args.load_in_bits == 4:
-        model = prepare_model_for_kbit_training(model)
+    # if model_args.load_in_bits == 8:
+    #     model = prepare_model_for_int8_training(model)
+    # elif model_args.load_in_bits == 4:
+    #     model = prepare_model_for_kbit_training(model)
 
     train_on_inputs = True
     print('train_on_inputs', train_on_inputs)
