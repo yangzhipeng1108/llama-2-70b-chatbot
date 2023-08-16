@@ -11,8 +11,8 @@
 ## 2、Clone源码
 
 ```bash
-git clone https://github.com/yangzhipeng1108/llama-2-chatbot.git
-cd llama2-lora-fine-tuning
+git clone https://github.com/yangzhipeng1108/llama-2-70b-chatbot.git
+cd llama-2-70b-chatbot
 ```
 
 ## 3、安装依赖环境
