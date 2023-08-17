@@ -398,24 +398,19 @@ def main():
     def evaluation(model, eval_dataloader):
         model.eval()
         losses = 0
+        metrics = []
         for step, batch in enumerate(eval_dataloader):
             batch = to_device(batch, device)
             with torch.no_grad():
                 outputs = model(**batch)
 
-            loss = outputs.loss
-            losses += loss.float()
+            preds = preprocess_logits_for_metrics(outputs.logits,batch)
 
-        losses = losses / (step + 1)
-        try:
-            perplexity = torch.exp(losses)
-        except OverflowError:
-            perplexity = float("inf")
-        try:
-            perplexity = get_all_reduce_mean(perplexity).item()
-        except:
-            pass
-        return perplexity
+            eval_preds= (preds,batch['labels'])
+            metric = compute_metrics(eval_preds)
+            metrics.append(metric['accuracy'])
+
+        return np.mean(metrics)
 
     # Split weights in two groups, one with weight decay and the other not.
     optimizer_grouped_parameters = get_optimizer_grouped_parameters(
@@ -441,7 +436,8 @@ def main():
         args=args,
         config=ds_config,
         lr_scheduler=lr_scheduler,
-        dist_init_required=True)
+        # dist_init_required=True
+    )
 
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
