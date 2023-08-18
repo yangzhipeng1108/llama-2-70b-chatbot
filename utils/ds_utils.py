@@ -29,6 +29,11 @@ def get_train_ds_config(offload,
         "stage3_prefetch_bucket_size": 3e7,
         "memory_efficient_linear": False
     }
+
+    # zero_opt_dict = {
+    #     "stage": 1,
+    #     "reduce_bucket_size": 5e8
+    # }
     return {
         "train_batch_size": GLOBAL_BATCH_SIZE,
         "train_micro_batch_size_per_gpu": MICRO_BATCH_SIZE,
@@ -37,6 +42,26 @@ def get_train_ds_config(offload,
         "fp16": {
             "enabled": True,
             "loss_scale_window": 100
+        },
+        "optimizer": {
+            "type": "Adam",
+            "params": {
+                "lr": 0.001,
+                "betas": [
+                    0.8,
+                    0.999
+                ],
+                "eps": 1e-8,
+                "weight_decay": 3e-7
+            }
+        },
+        "scheduler": {
+            "type": "WarmupLR",
+            "params": {
+                "warmup_min_lr": 0,
+                "warmup_max_lr": 0.001,
+                "warmup_num_steps": 1000
+            }
         },
         "gradient_clipping": 1.0,
         "prescale_gradients": False,
