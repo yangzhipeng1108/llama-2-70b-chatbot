@@ -9,6 +9,8 @@ import math
 import sys
 import random
 import evaluate
+import numpy as np
+import transformers
 
 import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
@@ -32,6 +34,8 @@ from utils.ds_utils import get_train_ds_config
 from utils.module.lora import convert_linear_layer_to_lora, convert_lora_to_linear_layer, only_optimize_lora_parameters
 from utils.model.model_utils import create_hf_model
 from utils.prompter import Prompter
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -234,7 +238,9 @@ def main():
         # torch.distributed.init_process_group(backend='nccl')
         deepspeed.init_distributed()
 
+
     args.global_rank = torch.distributed.get_rank()
+    print_rank_0('-' * 20+ 'test-3', args.global_rank)
 
     ds_config = get_train_ds_config(offload=args.offload,
                                     stage=args.zero_stage)
@@ -244,12 +250,16 @@ def main():
         'train_batch_size'] = args.per_device_train_batch_size * torch.distributed.get_world_size(
         ) * args.gradient_accumulation_steps
 
+    ds_config['gradient_accumulation_steps'] = args.gradient_accumulation_steps
+
+
     # If passed along, set the training seed now.
     set_random_seed(args.seed)
 
     assert not args.offload, "zero-offload is not currently supported but coming soon!"
 
-    torch.distributed.barrier()
+    # torch.distributed.barrier()
+    print_rank_0('-' * 20+ 'test-4', args.global_rank)
 
     # create common tokenizer based on actor model
     if "chatglm" in args.tokenizer_name:
@@ -260,19 +270,20 @@ def main():
                                       fast_tokenizer=True)
     tokenizer.pad_token = tokenizer.eos_token
     # tokenizer.pad_token = tokenizer.gmask_token
+    print_rank_0('-' * 20+ 'test-5', args.global_rank)
 
     model = create_hf_model(AutoModelForCausalLM,
                             args.model_name_or_path,
                             tokenizer,
                             ds_config,
                             disable_dropout=args.disable_dropout)
-
+    print_rank_0('-' * 20 + 'test-6', args.global_rank)
     if args.lora_dim > 0:
         model = convert_linear_layer_to_lora(model, args.lora_module_name,
                                              args.lora_dim)
         if args.only_optimize_lora:
             model = only_optimize_lora_parameters(model)
-
+    print_rank_0('-' * 20 + 'test-7', args.global_rank)
     # Prepare the data
     raw_datasets = _load_dataset(args)
 
@@ -395,9 +406,17 @@ def main():
                                  sampler=eval_sampler,
                                  batch_size=args.per_device_eval_batch_size)
 
+    # train_dataloader = DataLoader(train_dataset,
+    #                               collate_fn=transformers.DataCollatorForSeq2Seq(
+    #         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True),
+    #                               batch_size=args.per_device_train_batch_size)
+    # eval_dataloader = DataLoader(eval_dataset,
+    #                              collate_fn=transformers.DataCollatorForSeq2Seq(
+    #         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True ),
+    #                              batch_size=args.per_device_eval_batch_size)
+
     def evaluation(model, eval_dataloader):
         model.eval()
-        losses = 0
         metrics = []
         for step, batch in enumerate(eval_dataloader):
             batch = to_device(batch, device)
@@ -413,31 +432,44 @@ def main():
         return np.mean(metrics)
 
     # Split weights in two groups, one with weight decay and the other not.
-    optimizer_grouped_parameters = get_optimizer_grouped_parameters(
-        model, args.weight_decay)
+    # optimizer_grouped_parameters = get_optimizer_grouped_parameters(
+    #     model, args.weight_decay)
 
-    AdamOptimizer = DeepSpeedCPUAdam if args.offload else FusedAdam
-    optimizer = AdamOptimizer(optimizer_grouped_parameters,
-                              lr=args.learning_rate,
-                              betas=(0.9, 0.95))
+    # AdamOptimizer = DeepSpeedCPUAdam if args.offload else FusedAdam
+    # optimizer = AdamOptimizer(optimizer_grouped_parameters,
+    #                           lr=args.learning_rate,
+    #                           betas=(0.9, 0.95))
+    #
+    # num_update_steps_per_epoch = math.ceil(
+    #     len(train_dataloader) / args.gradient_accumulation_steps)
+    # lr_scheduler = get_scheduler(
+    #     name=args.lr_scheduler_type,
+    #     optimizer=optimizer,
+    #     num_warmup_steps=args.num_warmup_steps,
+    #     num_training_steps=args.num_train_epochs * num_update_steps_per_epoch,
+    # )
 
-    num_update_steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps)
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_train_epochs * num_update_steps_per_epoch,
-    )
+    def create_moe_param_groups(model):
+        from deepspeed.moe.utils import split_params_into_different_moe_groups_for_optimizer
+
+        parameters = {
+            'params': [p for p in model.parameters()],
+            'name': 'parameters'
+        }
+
+        return split_params_into_different_moe_groups_for_optimizer(parameters)
+
+    parameters = filter(lambda p: p.requires_grad, model.parameters())
+
+    # if args.moe_param_group:
+    #     parameters = create_moe_param_groups(model)
 
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
-        optimizer=optimizer,
         args=args,
         config=ds_config,
-        lr_scheduler=lr_scheduler,
-        # dist_init_required=True
-    )
+        model_parameters=parameters)
+
 
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
