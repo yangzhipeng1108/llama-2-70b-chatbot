@@ -12,7 +12,7 @@ import deepspeed
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
-
+import  numpy as np
 from typing import Dict, Optional, List, Union
 
 import datasets
@@ -43,7 +43,7 @@ from transformers import (
     Trainer,
     TrainingArguments,
     default_data_collator,
-    BitsAndBytesConfig,
+    # BitsAndBytesConfig,
     is_torch_tpu_available,
     set_seed,
     get_scheduler,
@@ -362,15 +362,16 @@ def train():
 
     training_args.global_rank = torch.distributed.get_rank()
 
-    ds_config = get_train_ds_config(offload=True,stage=3)
+    ds_config = get_train_ds_config(offload=False,stage=2)
     ds_config[
         'train_micro_batch_size_per_gpu'] = training_args.per_device_train_batch_size
     ds_config[
         'train_batch_size'] = training_args.per_device_train_batch_size * torch.distributed.get_world_size(
         ) * training_args.gradient_accumulation_steps
 
+    print_rank_0('train_batch_size:' + str(ds_config['train_batch_size']),training_args.global_rank)
 
-    torch.distributed.barrier()
+    # torch.distributed.barrier()
 
     send_example_telemetry("run_clm", model_args, data_args)
 
@@ -465,16 +466,16 @@ def train():
         task_type="CAUSAL_LM",
     )
 
-    bnb_config_4bit = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
-
-    bnb_config_8bit = BitsAndBytesConfig(
-        load_in_8bit=True
-    )
+    # bnb_config_4bit = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_use_double_quant=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.bfloat16
+    # )
+    #
+    # bnb_config_8bit = BitsAndBytesConfig(
+    #     load_in_8bit=True
+    # )
 
     if model_args.model_name_or_path:
         model = AutoModelForCausalLM.from_pretrained(
@@ -485,8 +486,8 @@ def train():
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None,
             torch_dtype=torch.float16,
-            load_in_8bit=True if model_args.load_in_bits == 8 else False,
-            quantization_config=bnb_config_4bit if model_args.load_in_bits == 4 else bnb_config_8bit,
+            # load_in_8bit=True if model_args.load_in_bits == 8 else False,
+            # quantization_config=bnb_config_4bit if model_args.load_in_bits == 4 else bnb_config_8bit,
             device_map={"": int(os.environ.get("LOCAL_RANK") or 0)}
         ).half().cuda()
     else:
@@ -502,10 +503,10 @@ def train():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
-    if model_args.load_in_bits == 8:
-        model = prepare_model_for_int8_training(model)
-    elif model_args.load_in_bits == 4:
-        model = prepare_model_for_kbit_training(model)
+    # if model_args.load_in_bits == 8:
+    #     model = prepare_model_for_int8_training(model)
+    # elif model_args.load_in_bits == 4:
+    #     model = prepare_model_for_kbit_training(model)
 
     train_on_inputs = True
     print('train_on_inputs', train_on_inputs)
@@ -630,23 +631,28 @@ def train():
         model=model,
     )
 
-    optimizer_grouped_parameters = get_optimizer_grouped_parameters(
-        model, training_args.weight_decay)
+    logger.info("**********deepspeed模型优化**********")
+    # optimizer_grouped_parameters = get_optimizer_grouped_parameters(
+    #     model, training_args.weight_decay)
 
     AdamOptimizer = FusedAdam
-    optimizer = AdamOptimizer(optimizer_grouped_parameters,
+    optimizer = AdamOptimizer(model.parameters(),
                               lr=training_args.learning_rate,
                               betas=(0.9, 0.95))
+    logger.info("**********optimizer**********")
 
     num_update_steps_per_epoch = math.ceil(
-        len(train_dataset) / training_args.gradient_accumulation_steps)
+        len(train_dataset) /     ds_config['train_batch_size'] )
     lr_scheduler = get_scheduler(
-        name=training_args.lr_scheduler_type,
+        name='cosine',
         optimizer=optimizer,
-        num_warmup_steps=20,
+        num_warmup_steps=0,
         num_training_steps=training_args.num_train_epochs * num_update_steps_per_epoch,
     )
 
+    training_args.gradient_accumulation_steps = int(training_args.gradient_accumulation_steps)
+
+    logger.info("**********deepspeed.initialize**********")
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
@@ -654,7 +660,6 @@ def train():
         config=ds_config,
         lr_scheduler=lr_scheduler,
         dist_init_required=True)
-
 
 
     train_sampler = DistributedSampler(train_dataset)
@@ -674,24 +679,19 @@ def train():
     def evaluation(model, eval_dataloader):
         model.eval()
         losses = 0
+        metrics = []
         for step, batch in enumerate(eval_dataloader):
             batch = to_device(batch, device)
             with torch.no_grad():
                 outputs = model(**batch)
 
-            loss = outputs.loss
-            losses += loss.float()
+            preds = preprocess_logits_for_metrics(outputs.logits,batch)
 
-        losses = losses / (step + 1)
-        try:
-            perplexity = torch.exp(losses)
-        except OverflowError:
-            perplexity = float("inf")
-        try:
-            perplexity = get_all_reduce_mean(perplexity).item()
-        except:
-            pass
-        return perplexity
+            eval_preds= (preds,batch['labels'])
+            metric = compute_metrics(eval_preds)
+            metrics.append(metric['accuracy'])
+
+        return np.mean(metrics)
 
     for epoch in range(int(training_args.num_train_epochs)):
         print_rank_0(
@@ -721,81 +721,81 @@ def train():
             save_hf_format(model, tokenizer, training_args)
 
 
-
-    logger.info("**********初始化训练器**********")
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
-        tokenizer=tokenizer,
-        # Data collator will default to DataCollatorWithPadding, so we change it.
-        data_collator=transformers.DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        ),
-        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics if training_args.do_eval and not is_torch_tpu_available()else None,
-        callbacks=([SavePeftModelCallback] if isinstance(
-            model, PeftModel) else None),
-    )
-
-    logger.info("**********开始训练**********")
-    if training_args.do_train:
-        checkpoint = None
-        if training_args.resume_from_checkpoint is not None:
-            resume_from_checkpoint = training_args.resume_from_checkpoint
-            checkpoint_name = os.path.join(
-                resume_from_checkpoint, "pytorch_model.bin")
-            if not os.path.exists(checkpoint_name):
-                checkpoint_name = os.path.join(
-                    resume_from_checkpoint, "adapter_model.bin"
-                )  # only LoRA model - LoRA config above has to fit
-                resume_from_checkpoint = (
-                    False  # So the trainer won't try loading its state
-                )
-            # The two files above have a different name depending on how they were saved, but are actually the same.
-            if os.path.exists(checkpoint_name):
-                print(f"Restarting from {checkpoint_name}")
-                adapters_weights = torch.load(checkpoint_name)
-                set_peft_model_state_dict(model, adapters_weights)
-            else:
-                print(f"Checkpoint {checkpoint_name} not found")
-        elif last_checkpoint is not None:
-            checkpoint = last_checkpoint
-
-        if torch.__version__ >= "2" and sys.platform != "win32":
-            model = torch.compile(model)
-
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
-        trainer.save_model()  # Saves the tokenizer too for easy upload
-
-        metrics = train_result.metrics
-
-        max_train_samples = (
-            data_args.max_train_samples if data_args.max_train_samples is not None else len(
-                train_dataset)
-        )
-        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
-
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-        trainer.save_state()
-
-    logger.info("**********开始评估**********")
-    if training_args.do_eval:
-        metrics = trainer.evaluate()
-
-        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(
-            eval_dataset)
-        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-        try:
-            perplexity = math.exp(metrics["eval_loss"])
-        except OverflowError:
-            perplexity = float("inf")
-        metrics["perplexity"] = perplexity
-
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
+    #
+    # logger.info("**********初始化训练器**********")
+    # trainer = Trainer(
+    #     model=model,
+    #     args=training_args,
+    #     train_dataset=train_dataset if training_args.do_train else None,
+    #     eval_dataset=eval_dataset if training_args.do_eval else None,
+    #     tokenizer=tokenizer,
+    #     # Data collator will default to DataCollatorWithPadding, so we change it.
+    #     data_collator=transformers.DataCollatorForSeq2Seq(
+    #         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+    #     ),
+    #     compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
+    #     preprocess_logits_for_metrics=preprocess_logits_for_metrics if training_args.do_eval and not is_torch_tpu_available()else None,
+    #     callbacks=([SavePeftModelCallback] if isinstance(
+    #         model, PeftModel) else None),
+    # )
+    #
+    # logger.info("**********开始训练**********")
+    # if training_args.do_train:
+    #     checkpoint = None
+    #     if training_args.resume_from_checkpoint is not None:
+    #         resume_from_checkpoint = training_args.resume_from_checkpoint
+    #         checkpoint_name = os.path.join(
+    #             resume_from_checkpoint, "pytorch_model.bin")
+    #         if not os.path.exists(checkpoint_name):
+    #             checkpoint_name = os.path.join(
+    #                 resume_from_checkpoint, "adapter_model.bin"
+    #             )  # only LoRA model - LoRA config above has to fit
+    #             resume_from_checkpoint = (
+    #                 False  # So the trainer won't try loading its state
+    #             )
+    #         # The two files above have a different name depending on how they were saved, but are actually the same.
+    #         if os.path.exists(checkpoint_name):
+    #             print(f"Restarting from {checkpoint_name}")
+    #             adapters_weights = torch.load(checkpoint_name)
+    #             set_peft_model_state_dict(model, adapters_weights)
+    #         else:
+    #             print(f"Checkpoint {checkpoint_name} not found")
+    #     elif last_checkpoint is not None:
+    #         checkpoint = last_checkpoint
+    #
+    #     if torch.__version__ >= "2" and sys.platform != "win32":
+    #         model = torch.compile(model)
+    #
+    #     train_result = trainer.train(resume_from_checkpoint=checkpoint)
+    #     trainer.save_model()  # Saves the tokenizer too for easy upload
+    #
+    #     metrics = train_result.metrics
+    #
+    #     max_train_samples = (
+    #         data_args.max_train_samples if data_args.max_train_samples is not None else len(
+    #             train_dataset)
+    #     )
+    #     metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+    #
+    #     trainer.log_metrics("train", metrics)
+    #     trainer.save_metrics("train", metrics)
+    #     trainer.save_state()
+    #
+    # logger.info("**********开始评估**********")
+    # if training_args.do_eval:
+    #     metrics = trainer.evaluate()
+    #
+    #     max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(
+    #         eval_dataset)
+    #     metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+    #     try:
+    #         perplexity = math.exp(metrics["eval_loss"])
+    #     except OverflowError:
+    #         perplexity = float("inf")
+    #     metrics["perplexity"] = perplexity
+    #
+    #     trainer.log_metrics("eval", metrics)
+    #     trainer.save_metrics("eval", metrics)
 
 
 if __name__ == "__main__":
