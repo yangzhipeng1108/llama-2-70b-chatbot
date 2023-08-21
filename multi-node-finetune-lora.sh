@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # DeepSpeed Team
-OUTPUT=/root/nas-share/chat/llama/output
+OUTPUT=/root/llama/llama-2-70b-chatbot/output
 ZERO_STAGE=3
 
 
-deepspeed --hostfile /root/nas-share/chat/llama/hostfile  /root/nas-share/chat/llama/main.py \
-   --model_name_or_path /root/nas-share/chat/llama/model/models--daryl149--llama-2-7b-chat-hf/snapshots/bbc9b373dacff93e600e4426f2b3d3dd264e90ed \
-   --tokenizer_name /root/nas-share/chat/llama/merged_tokenizer_hf \
-   --train_files /root/nas-share/chat/llama/alpaca_gpt4_data_zh.json \
-   --validation_files  /root/nas-share/chat/llama/trans_chinese_alpaca_data.json \
+deepspeed --hostfile /root/llama/llama-2-70b-chatbot/hostfile  /root/llama/llama-2-70b-chatbot/main.py \
+   --model_name_or_path /root/llama/llama2-lora-fine-tuning/model/models--daryl149--llama-2-7b-chat-hf/snapshots/bbc9b373dacff93e600e4426f2b3d3dd264e90ed \
+   --tokenizer_name /root/llama/llama2-lora-fine-tuning/merged_tokenizer_hf \
+   --train_files /root/llama/llama2-lora-fine-tuning/data/alpaca_gpt4_data_zh.json \
+   --validation_files  /root/llama/llama2-lora-fine-tuning/data/trans_chinese_alpaca_data.json \
    --per_device_train_batch_size 1 \
    --per_device_eval_batch_size 1 \
    --do_train True \
@@ -30,4 +30,3 @@ deepspeed --hostfile /root/nas-share/chat/llama/hostfile  /root/nas-share/chat/l
    --deepspeed \
    --output_dir $OUTPUT \
    &> $OUTPUT/training.log
-
