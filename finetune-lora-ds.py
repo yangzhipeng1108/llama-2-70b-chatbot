@@ -362,7 +362,7 @@ def train():
 
     training_args.global_rank = torch.distributed.get_rank()
 
-    ds_config = get_train_ds_config(offload=False,stage=2)
+    ds_config = get_train_ds_config(offload=False,stage=3)
     ds_config[
         'train_micro_batch_size_per_gpu'] = training_args.per_device_train_batch_size
     ds_config[
@@ -541,6 +541,7 @@ def train():
 
         return result
 
+    add_eos_token = tokenizer.add_eos_token
     def generate_and_tokenize_prompt(data_point):
         full_prompt = prompter.generate_prompt(
             data_point["instruction"],
@@ -632,11 +633,11 @@ def train():
     )
 
     logger.info("**********deepspeed模型优化**********")
-    # optimizer_grouped_parameters = get_optimizer_grouped_parameters(
-    #     model, training_args.weight_decay)
+    optimizer_grouped_parameters = get_optimizer_grouped_parameters(
+        model, training_args.weight_decay)
 
     AdamOptimizer = FusedAdam
-    optimizer = AdamOptimizer(model.parameters(),
+    optimizer = AdamOptimizer(optimizer_grouped_parameters,
                               lr=training_args.learning_rate,
                               betas=(0.9, 0.95))
     logger.info("**********optimizer**********")
@@ -661,11 +662,15 @@ def train():
         lr_scheduler=lr_scheduler,
         dist_init_required=True)
 
-
+    print_rank_0(train_dataset, training_args.global_rank)
+    
     train_sampler = DistributedSampler(train_dataset)
 
     eval_sampler = DistributedSampler(eval_dataset)
 
+    data_collator = transformers.DataCollatorWithPadding(
+        tokenizer
+    )
     eval_dataloader = DataLoader(eval_dataset,
                                  collate_fn=default_data_collator,
                                  sampler=eval_sampler,
@@ -675,6 +680,7 @@ def train():
                                   collate_fn=default_data_collator,
                                   sampler=train_sampler,
                                   batch_size=training_args.per_device_train_batch_size)
+   
 
     def evaluation(model, eval_dataloader):
         model.eval()
@@ -699,7 +705,9 @@ def train():
             training_args.global_rank)
         model.train()
         for step, batch in enumerate(train_dataloader):
-            logger.info(batch)
+            # logger.info(batch['input_ids'].shape)
+            # logger.info(batch['attention_mask'].shape)
+            # logger.info(batch['labels'].shape)
             batch = to_device(batch, device)
             outputs = model(**batch, use_cache=False)
             loss = outputs.loss
